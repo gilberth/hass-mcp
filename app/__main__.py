@@ -5,39 +5,51 @@ import uvicorn
 import os
 
 # Importamos la instancia mcp desde app.server
-from app.server import mcp as mcp_app_instance
+from app.server import mcp as mcp_instance # Renombramos para claridad
 
 def main_stdio():
     """Run the MCP server with stdio communication (original behavior)"""
     print("Running Hass-MCP server with stdio communication.")
-    mcp_app_instance.run() # Esto utiliza stdio_server internamente
+    mcp_instance.run()
 
 def main_network():
     """Run the MCP server as a network service using Uvicorn"""
     host = os.environ.get("HASS_MCP_HOST", "0.0.0.0")
     port = int(os.environ.get("HASS_MCP_PORT", "8008"))
     reload_uvicorn = os.environ.get("HASS_MCP_RELOAD", "false").lower() == "true"
+    log_level_uvicorn = os.environ.get("HASS_MCP_LOG_LEVEL", "info").lower()
+
 
     print(f"Running Hass-MCP server as a network service on {host}:{port}")
     if reload_uvicorn:
         print("Uvicorn reload enabled.")
 
-    # Aquí asumimos que 'mcp_app_instance' es directamente una aplicación ASGI
-    # o que la librería 'mcp' registra sus rutas en una instancia de Starlette/FastAPI
-    # que es accesible a través de mcp_app_instance o un atributo de ella.
-    # Si mcp_app_instance.run() es lo que normalmente se usa para stdio,
-    # y si FastMCP es una app Starlette/FastAPI-like, entonces 'mcp_app_instance'
-    # debería ser la app ASGI.
-    #
-    # La clave está en si la instancia de FastMCP (mcp_app_instance) es en sí misma
-    # una aplicación ASGI válida para Uvicorn.
-    # Dado que pyproject.toml incluye 'mcp[cli]>=1.4.1', 'starlette', 'uvicorn',
-    # es muy probable que sí.
+    # Dado que FastMCP es una subclase de starlette.applications.Starlette,
+    # la instancia mcp_instance *ES* la aplicación ASGI.
+    # El error anterior "TypeError: 'FastMCP' object is not callable" es peculiar.
+    # Podría estar relacionado con cómo Uvicorn maneja las subclases directas
+    # o si falta algún paso de inicialización que el método .run() de FastMCP haría.
 
-    # Intentaremos pasar directamente la instancia mcp_app_instance a uvicorn.run
-    # Si esto no funciona, necesitaríamos investigar la estructura de FastMCP
-    # para encontrar el objeto de aplicación ASGI (ej. mcp_app_instance.app)
-    uvicorn.run(mcp_app_instance, host=host, port=port, reload=reload_uvicorn)
+    # Una posible razón para "ASGI 'lifespan' protocol appears unsupported."
+    # es que los manejadores on_startup y on_shutdown no están siendo
+    # registrados/ejecutados de la misma manera que lo haría FastMCP.run() a través de stdio_server.
+    # La clase Starlette (y por ende FastMCP) soporta el protocolo lifespan.
+    # El mensaje de Uvicorn podría ser una pista de que algo en la inicialización no está ocurriendo.
+
+    # FastMCP tiene un método 'startup' y 'shutdown' que son llamados
+    # por la lógica del ciclo de vida de Starlette si está configurado.
+
+    # Vamos a pasar la ruta de importación de la instancia a Uvicorn,
+    # lo cual a veces es más robusto para Uvicorn.
+    # Uvicorn puede entonces importar y manejar la aplicación.
+    uvicorn.run(
+        "app.server:mcp",  # Ruta de importación a la instancia mcp
+        host=host,
+        port=port,
+        reload=reload_uvicorn,
+        log_level=log_level_uvicorn,
+        factory=False # Indica que "app.server:mcp" es la app, no una factoría
+    )
 
 if __name__ == "__main__":
     RUN_MODE = os.environ.get("HASS_MCP_RUN_MODE", "stdio").lower()
